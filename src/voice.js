@@ -183,37 +183,119 @@ const VOICE = (function () {
     b.got[who] = pool.length ? pool[hash(who) % pool.length] : b.teller;
     return b.got[who];
   }
+  /* ---- recorded voices: each page has one sound file with all of its lines; CLIPS says where each line sits ---- */
+  const TAPE = typeof CLIPS === 'object' && CLIPS && CLIPS.pages ? CLIPS.pages : {};
+  const tape = typeof window !== 'undefined' && typeof window.Audio === 'function' && Object.keys(TAPE).length ? new window.Audio() : null;
+  const dead = {}, index = {};
+  let onTape = '', primed = false;
+  if (tape) tape.preload = 'auto';
+  function key(who, text) {   /* same sum as key() in tools/record.py */
+    let h = 2166136261; const s = who + '|' + text;
+    for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0;
+    return h.toString(36);
+  }
+  function clipAt(page, part) {
+    if (!tape || !page || dead[page] || !TAPE[page]) return -1;
+    if (!index[page]) { index[page] = {}; TAPE[page].forEach(function (c, i) { index[page][c[0]] = i; }); }
+    const i = index[page][key(part.who, part.text)];
+    return i === undefined ? -1 : i;
+  }
+  function load(page) {
+    if (onTape === page) return;
+    onTape = page; tape.src = 'audio/' + page + '.m4a?v=' + CLIPS.v;
+    try { tape.load(); } catch (e) { /* it loads when played */ }
+  }
   function stop() {
     turn++; held = []; clearInterval(watch);
     if (synth) try { synth.cancel(); } catch (e) { /* nothing to stop */ }
+    if (tape) try { tape.pause(); } catch (e) { /* nothing to stop */ }
   }
-  /* say the parts in order. onMark(mark) runs as each part starts; onEnd(mine, started) runs once at the end,
-     where started is false if the device never made a sound */
-  function say(parts, onMark, onEnd) {
+  /* say the parts in order: the recorded line when there is one, the device's own voice when there is not
+     (a page made fresh for a replay, or a player's own names). onMark(mark) runs as each part starts;
+     onEnd(mine, started) runs once at the end, where started is false if nothing could be heard */
+  function say(parts, onMark, onEnd, page) {
     stop();
-    if (!synth || !parts || !parts.length) return false;
-    const my = turn, U = window.SpeechSynthesisUtterance, born = Date.now();
-    let begun = 0, over = false, started = false;
+    if (!parts || !parts.length) return false;
+    const my = turn, plan = parts.map(function (p) { return { p: p, c: clipAt(page, p) }; });
+    const taped = plan.some(function (x) { return x.c >= 0; }), plainOnes = plan.some(function (x) { return x.c < 0; });
+    if (!synth && !taped) return false;
+    let started = false, over = false, rolling = false;
     function end() { if (over || my !== turn) return; over = true; clearInterval(watch); held = []; if (onEnd) onEnd(true, started); }
-    parts.forEach(function (x, n) {
-      const u = new U(x.text), pr = profile(x.who), v = voiceFor(x.who);
-      if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-US';
-      u.pitch = Math.max(0.5, Math.min(2, pr[0])); u.rate = Math.max(0.5, Math.min(1.4, pr[1])); u.volume = 1;
-      u.onstart = function () { if (my !== turn) return; started = true; begun = Date.now(); if (onMark) onMark(x.mark); };
-      u.onend = function () { if (my !== turn) return; begun = Date.now(); if (n === parts.length - 1) end(); };
-      u.onerror = function () { if (my === turn && n === parts.length - 1) end(); };
-      held.push(u);   /* keep hold of them, or some tablets forget to say when they are done */
-      try { synth.speak(u); } catch (e) { /* skip this part */ }
-    });
-    watch = setInterval(function () {
-      if (my !== turn) { clearInterval(watch); return; }
-      if (!started) { if (Date.now() - born > 6000) { try { synth.cancel(); } catch (e) { /* already quiet */ } end(); } }
-      else if (!synth.speaking && !synth.pending && Date.now() - begun > 900) end();
-    }, 450);
+    function begin(x) { started = true; if (onMark) onMark(x.p.mark); }
+    function onClip(x) { return x.c >= 0 && !dead[page]; }
+    function step(i) {
+      if (my !== turn) return;
+      if (i >= plan.length) return end();
+      if (onClip(plan[i])) return play(i);
+      let j = i; while (j < plan.length && !onClip(plan[j])) j++;
+      if (!synth) return step(j);
+      utter(plan.slice(i, j), function () { step(j); });
+    }
+    /* the device's own voice, for a run of lines with no recording */
+    function utter(run, next) {
+      const U = window.SpeechSynthesisUtterance, born = Date.now();
+      let begun = 0, heard = false, done = false;
+      function fin() { if (done || my !== turn) return; done = true; clearInterval(watch); held = []; next(); }
+      run.forEach(function (x, n) {
+        const u = new U(x.p.text), pr = profile(x.p.who), v = voiceFor(x.p.who);
+        if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-US';
+        u.pitch = Math.max(0.5, Math.min(2, pr[0])); u.rate = Math.max(0.5, Math.min(1.4, pr[1])); u.volume = 1;
+        u.onstart = function () { if (my !== turn) return; heard = true; begun = Date.now(); begin(x); };
+        u.onend = function () { if (my !== turn) return; begun = Date.now(); if (n === run.length - 1) fin(); };
+        u.onerror = function () { if (my === turn && n === run.length - 1) fin(); };
+        held.push(u);   /* keep hold of them, or some tablets forget to say when they are done */
+        try { synth.speak(u); } catch (e) { /* skip this part */ }
+      });
+      clearInterval(watch);
+      watch = setInterval(function () {
+        if (my !== turn) { clearInterval(watch); return; }
+        if (!heard) { if (Date.now() - born > 6000) { try { synth.cancel(); } catch (e) { /* already quiet */ } fin(); } }
+        else if (!synth.speaking && !synth.pending && Date.now() - begun > 900) fin();
+      }, 450);
+    }
+    /* a recorded line; when the next part is the next line on the same tape, it just keeps rolling */
+    function play(i) {
+      let x = plan[i], c = TAPE[page][x.c], begun = false, moved = Date.now(), lastT = -1;
+      function seek() { const to = Math.max(0, c[1] - 0.1); try { if (tape.currentTime < c[1] - 0.2 || tape.currentTime >= c[2]) tape.currentTime = to; } catch (e) { /* not ready yet */ } }
+      function fail() { if (my !== turn) return; dead[page] = true; rolling = false; clearInterval(watch); try { tape.pause(); } catch (e) { /* fine */ } tape.muted = false; if (synth) step(i); else end(); }
+      rolling = true;
+      load(page);
+      tape.muted = true;   /* quiet until it is at the right place */
+      if (tape.readyState >= 1) seek(); else tape.addEventListener('loadedmetadata', function () { if (my === turn && rolling && !begun) seek(); }, { once: true });
+      const pr = tape.play();
+      if (pr && pr.catch) pr.catch(function (e) { if (my === turn && rolling && e && e.name !== 'AbortError') fail(); });
+      clearInterval(watch);
+      watch = setInterval(function () {
+        if (my !== turn) { clearInterval(watch); return; }
+        if (tape.error) return fail();
+        const t = tape.currentTime;
+        if (t !== lastT) { lastT = t; moved = Date.now(); } else if (Date.now() - moved > 9000) return fail();
+        if (!begun) {
+          if (tape.readyState < 2 || tape.seeking) return;
+          if (t >= c[1] - 0.2 && t < c[2]) { tape.muted = false; begun = true; begin(x); if (tape.paused) { const again = tape.play(); if (again && again.catch) again.catch(function () { /* the watch will notice */ }); } }
+          else seek();
+          return;
+        }
+        const nx = plan[i + 1];
+        if (nx && nx.c === x.c + 1 && !tape.ended) {
+          if (t >= TAPE[page][nx.c][1] - 0.03) { i++; x = nx; c = TAPE[page][x.c]; begin(x); }
+          return;
+        }
+        if (t >= c[2] + 0.06 || tape.ended) { rolling = false; clearInterval(watch); try { tape.pause(); } catch (e) { /* fine */ } step(i + 1); }
+      }, 30);
+    }
+    /* a tap is needed to let a tablet make sound, so wake both kinds of voice inside this tap if both will be used */
+    if (taped && plainOnes && synth && !primed) { primed = true; try { const hush = new window.SpeechSynthesisUtterance(' '); hush.volume = 0; synth.speak(hush); } catch (e) { /* fine */ } }
+    if (taped && plan[0].c < 0 && synth) {
+      load(page); tape.muted = true;
+      const wake = tape.play();
+      if (wake && wake.then) wake.then(function () { if (!rolling) tape.pause(); }).catch(function () { /* play() will find out */ });
+    }
+    step(0);
     return true;
   }
   if (synth && typeof synth.addEventListener === 'function') synth.addEventListener('voiceschanged', function () { book = null; });
   if (synth) try { synth.getVoices(); } catch (e) { /* voices come later */ }
 
-  return { can: !!synth, cast: CAST, fix: FIX, page: page, plain: plain, helperOf: helperOf, profile: profile, voiceFor: voiceFor, say: say, stop: stop };
+  return { can: !!synth || !!tape, key: key, cast: CAST, fix: FIX, page: page, plain: plain, helperOf: helperOf, profile: profile, voiceFor: voiceFor, say: say, stop: stop };
 })();

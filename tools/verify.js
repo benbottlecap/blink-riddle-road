@@ -89,6 +89,7 @@ CHAPTERS.forEach(c => { let paths = 0; (function walk(id, k, seen) { const n = S
 // 4. mazes: pull the builder out of the game code and test it directly
 const eng = fs.readFileSync(d + 'engine.js', 'utf8'), mazeSrc = eng.slice(eng.indexOf('  var DIRS = '), eng.indexOf('  var S = 40, P = 6;'));
 const buildMaze = new Function(mazeSrc + '\nreturn buildMaze;')();
+let behindDoor = 0, deadSpace = 0;
 function testMaze(id, m) {
   const z = buildMaze(id, m), n = z.w * z.h, D = [[0, -1, 1, 4], [1, 0, 2, 8], [0, 1, 4, 1], [-1, 0, 8, 2]], dist = new Array(n).fill(-1), q = [0]; dist[0] = 0;
   while (q.length) { const c = q.shift(), x = c % z.w, y = Math.floor(c / z.w); D.forEach(([dx, dy, b, o]) => { if (!(z.open[c] & b)) return; const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= z.w || ny >= z.h) { bad.push(id + ' maze opens off the board'); return; } const t = ny * z.w + nx; if (!(z.open[t] & o)) bad.push(id + ' one-way wall'); if (dist[t] < 0) { dist[t] = dist[c] + 1; q.push(t); } }); }
@@ -97,6 +98,11 @@ function testMaze(id, m) {
   const spots = z.lights.concat(z.key >= 0 ? [z.key] : []);
   if (z.lights.length !== 3 || new Set(spots).size !== spots.length || spots.some(c => c === 0 || c === z.exit || c < 0 || c >= n)) bad.push(id + ' lights or key misplaced (seed ' + m.seed + '): ' + spots);
   if ((m.kind === 'key') !== (z.key >= 0) || (m.kind === 'fog') !== z.fog) bad.push(id + ' wrong maze kind');
+  // stepping on the door ends the maze, so every light, the key and every square must be reachable without crossing it
+  const free = new Array(n).fill(0), q2 = [0]; free[0] = 1;
+  while (q2.length) { const c = q2.shift(); if (c === z.exit) continue; D.forEach(([dx, dy, b]) => { if (z.open[c] & b) { const t = c + dx + dy * z.w; if (!free[t]) { free[t] = 1; q2.push(t); } } }); }
+  if (spots.some(c => !free[c])) { behindDoor++; if (behindDoor <= 12) bad.push(id + ' maze has a light or key behind the door (seed ' + m.seed + ')'); }
+  else if (free.some(v => !v)) { deadSpace++; if (deadSpace <= 3) bad.push(id + ' maze has squares that can only be reached through the door (seed ' + m.seed + ')'); }
   return dist[z.exit];
 }
 let boards = 0, mazeRuns = 0, shortest = 99, longest = 0;
@@ -118,5 +124,16 @@ const vfile = require('path').join(__dirname, 'voices.json');
 if (process.argv.includes('--save-voices')) fs.writeFileSync(vfile, JSON.stringify(speakers, null, 1) + '\n');
 const reviewed = fs.existsSync(vfile) ? JSON.parse(fs.readFileSync(vfile, 'utf8')) : {};
 Object.keys(speakers).concat(Object.keys(reviewed)).forEach(id => { if (speakers[id] !== reviewed[id]) bad.push('voices: speakers on ' + id + ' differ from the reviewed list :: now ' + speakers[id]); });
-console.log(JSON.stringify({ handWritten: hand, handWrittenSolvedByChecker: solved, handWrittenWordRiddles: hand - solved, rerolled: rolls, generators: Object.keys(REMIX.gen).length, mazeBoards: boards, mazeVariations: mazeRuns, firstPlayPathLen: [shortest, longest], chapterPaths: CHAPTERS.map(c => c.paths).join(','), liveGateCases: gate.length, spokenLines: spoken, voices: Object.keys(cast).length, problems: bad.length }));
+// 7. recorded voices: each recorded page has its sound file, and every hand-written spoken line has a recording.
+//    A line with no recording is not an error (the game reads it in the device's own voice), but it should be 0: see CLAUDE.md.
+let clipPages = 0, clipsMissing = 0;
+if (fs.existsSync(d + 'clips.js')) {
+  const CL = new Function(fs.readFileSync(d + 'clips.js', 'utf8') + '\nreturn CLIPS;')(), adir = require('path').join(__dirname, '..', 'audio') + '/';
+  Object.keys(CL.pages).forEach(pg => { clipPages++; if (!fs.existsSync(adir + pg + '.m4a')) bad.push('recordings: audio/' + pg + '.m4a is missing'); if (pg !== 'title' && !STORY[pg]) bad.push('recordings: recorded page is gone from the story: ' + pg); });
+  Object.keys(STORY).forEach(id => { const n = STORY[id], have = new Set((CL.pages[id] || []).map(c => c[0])), pg = VOICE.page(id, n, n, REMIX.ai[id] && REMIX.ai[id][0]);
+    const need = (who, text) => { const t = VOICE.plain(text); if (/[A-Za-z0-9]/.test(t) && !have.has(VOICE.key(who, t))) clipsMissing++; };
+    pg.text.concat(pg.after).forEach(ps => ps.forEach(p => need(p.who, p.text)));
+    if (n.riddle) { n.riddle.lines.forEach(l => need(pg.asker, l)); n.riddle.options.forEach(o => { need('narrator', o.label + '.'); if (o.hint) need('narrator', o.hint); }); } });
+}
+console.log(JSON.stringify({ handWritten: hand, handWrittenSolvedByChecker: solved, handWrittenWordRiddles: hand - solved, rerolled: rolls, generators: Object.keys(REMIX.gen).length, mazeBoards: boards, mazeVariations: mazeRuns, firstPlayPathLen: [shortest, longest], chapterPaths: CHAPTERS.map(c => c.paths).join(','), liveGateCases: gate.length, spokenLines: spoken, voices: Object.keys(cast).length, mazesBlockedByDoor: behindDoor, mazesWithSpaceBehindDoor: deadSpace, recordedPages: clipPages, linesNotRecorded: clipsMissing, problems: bad.length }));
 const uniq = {}; bad.forEach(b => { const k = b.split(' :: ')[0]; uniq[k] = uniq[k] || b; }); Object.values(uniq).slice(0, 25).forEach(b => console.log('PROBLEM', b.slice(0, 330)));

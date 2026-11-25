@@ -180,9 +180,32 @@
       var cx2 = c % w + d.dx, cy2 = Math.floor(c / w) + d.dy;
       if (cx2 >= 0 && cy2 >= 0 && cx2 < w && cy2 < h) { open[c] |= d.b; open[cy2 * w + cx2] |= d.o; }
     }
+    /* Stepping on the gold door ends the maze, so the door must be the end of the road: wall off anything
+       behind it, then open another way in, until every square can be reached without crossing the door. */
+    var exit = n - 1, free = [];
+    function roam() {
+      var qq = [0], a, j, dd, tt;
+      for (a = 0; a < n; a++) free[a] = 0;
+      free[0] = 1;
+      while (qq.length) { a = qq.shift(); if (a === exit) continue; for (j = 0; j < 4; j++) { dd = DIRS[j]; if (open[a] & dd.b) { tt = a + dd.dx + dd.dy * w; if (!free[tt]) { free[tt] = 1; qq.push(tt); } } } }
+    }
+    roam();
+    for (i = 0; i < 4; i++) { d = DIRS[i]; if (open[exit] & d.b) { t = exit + d.dx + d.dy * w; if (!free[t]) { open[exit] &= ~d.b; open[t] &= ~d.o; } } }
+    for (var tries = 0; tries < n; tries++) {
+      var joined = false;
+      for (c = 0; c < n && !joined; c++) {
+        if (free[c] || c === exit) continue;
+        for (i = 0; i < 4 && !joined; i++) {
+          d = DIRS[i]; var ax = c % w + d.dx, ay = Math.floor(c / w) + d.dy, a2 = ay * w + ax;
+          if (ax >= 0 && ay >= 0 && ax < w && ay < h && a2 !== exit && free[a2]) { open[c] |= d.b; open[a2] |= d.o; joined = true; }
+        }
+      }
+      if (!joined) break;
+      roam();
+    }
     var dist = [], q = [0]; for (i = 0; i < n; i++) dist.push(-1); dist[0] = 0;
     while (q.length) { c = q.shift(); for (i = 0; i < 4; i++) { d = DIRS[i]; if (open[c] & d.b) { t = c + d.dx + d.dy * w; if (dist[t] < 0) { dist[t] = dist[c] + 1; q.push(t); } } } }
-    var exit = n - 1, ends = [], rest = [];
+    var ends = [], rest = [];
     for (c = 1; c < n - 1; c++) { var k = open[c]; (k === 1 || k === 2 || k === 4 || k === 8 ? ends : rest).push(c); }
     ends.sort(function (a, b) { return dist[b] - dist[a]; });
     rest.sort(function () { return r() - 0.5; });
@@ -429,14 +452,14 @@
       if (wait) return out;
       if (r && !done) {
         r.lines.forEach(function (l, i) { add(pg.asker, l, 'l' + i); });
-        if (!r.knock) add('narrator', r.options.filter(function (o, i) { return wrong.indexOf(i) === -1; }).map(function (o) { return VOICE.plain(o.label); }).join('. ') + '.', 'o');
+        if (!r.knock) r.options.forEach(function (o, i) { if (wrong.indexOf(i) === -1) add('narrator', VOICE.plain(o.label) + '.', 'o'); });
       } else if (r) add('narrator', 'The answer is: ' + rightAnswer(id, r) + '.', 'n');
       else if (g && !done) add('narrator', n.maze ? mazeTip(n.maze) : MEM_TIP, 'm');
     }
     if (g && !done) return out;
     if (g) each(pg.after, 'a');
     if (n.ending) add('narrator', endLine(), 'e');
-    else { if (n.ask) add('narrator', n.ask, 'w'); add('narrator', n.choices.map(function (c) { return VOICE.plain(c.label); }).join('. ') + '.', 'w'); }
+    else { if (n.ask) add('narrator', n.ask, 'w'); n.choices.forEach(function (c) { add('narrator', VOICE.plain(c.label) + '.', 'w'); }); }
     return out;
   }
   function markEl(mark) {
@@ -464,7 +487,7 @@
       talk.on = false; unmark(); sayBtn();
       if (!started && !talk.mute) { talk.mute = true; var row = scene.querySelector('.say'); if (row) row.insertAdjacentHTML('beforeend', '<p class="small" role="status">This device has no reading voice turned on.</p>'); }
       else if (started) talk.mute = false;
-    });
+    }, state.screen === 'title' ? 'title' : state.node);
     sayBtn();
   }
   function sayHint(text) { if (keep.read && VOICE.can && text) startSay([{ who: 'narrator', text: nmText(VOICE.plain(text)), mark: 'h' }]); }
