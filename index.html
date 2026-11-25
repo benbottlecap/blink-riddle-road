@@ -254,6 +254,13 @@ h1 {
 .row { display: flex; flex-wrap: wrap; gap: 10px; }
 
 .ways { display: flex; flex-direction: column; gap: 12px; }
+.tools { display: flex; flex-wrap: wrap; gap: 10px; padding-top: 16px; border-top: 1px solid rgba(170, 183, 214, 0.25); }
+.saved { margin: 0; font-family: var(--display); font-weight: 700; font-size: 1.1rem; color: var(--glow); }
+.saved:focus { outline: none; }
+.say { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.chip.talk { border-color: var(--glow); font-weight: 700; }
+.chip.talk[aria-pressed="true"] { background: rgba(255, 211, 92, 0.22); }
+.now { background: rgba(255, 211, 92, 0.14); box-shadow: 0 0 0 7px rgba(255, 211, 92, 0.14); border-radius: 8px; }
 .ways .ask { margin: 0; font-family: var(--display); font-weight: 700; font-size: 1.1rem; color: var(--glow); }
 .go {
   min-height: 62px;
@@ -2586,6 +2593,226 @@ const ICON = (function () {
 
 </script>
 <script>
+/* Reading aloud: works out who says each line, and gives every character a voice of their own.
+   The voices are the ones built into the device (Web Speech), shaped by pitch and speed. */
+const VOICE = (function () {
+  /* [names in the story, key, pitch, speed, base voice: f / m / n (the storyteller's own), favourite voices] — first match wins.
+     f and m follow the "she" and "he" the story uses, so they also tell the reader who a "she says" points back to. */
+  const WHO = [
+    ['grandma glow|old firefly|creaky little voice', 'glow', 1.3, 0.78, 'f', /grandma|moira|fiona|martha/i],
+    ['blink|firefly', 'blink', 1.7, 1.05, 'm'],
+    ['ella|elephant', 'ella', 0.8, 0.84, 'f'],
+    ['sharky|shark', 'sharky', 0.95, 1.12, 'm'],
+    ['lantern tree|deep voice', 'tree', 0.55, 0.76, 'm'],
+    ['light keeper', 'keeper', 1.05, 0.84, 'f'],
+    ['clock mouse', 'clockmouse', 1.6, 1.12, 'm'],
+    ['field mouse|mouse', 'mouse', 1.85, 1.14, 'f'],
+    ['very small star|little star', 'star', 1.65, 0.92, 'f'],
+    ['great clock', 'clock', 0.6, 0.8, 'm'],
+    ['bookworm|worm', 'bookworm', 1.2, 0.8, 'm'],
+    ['great book|book', 'book', 0.75, 0.76, 'f'],
+    ['voice like a long breath|wind', 'wind', 1.4, 0.74, 'f'],
+    ['mother fox|their mother|fox', 'fox', 1.0, 0.95, 'f'],
+    ['smallest cub|cubs?', 'cub', 1.9, 1.12, 'f'],
+    ['snow hare', 'snowhare', 1.3, 1.1, 'f'],
+    ['hare', 'hare', 1.45, 1.22, 'f'],
+    ['owl', 'owl', 0.8, 0.8, 'f'],
+    ['hedgehog', 'hedgehog', 1.3, 0.96, 'm'],
+    ['spider', 'spider', 1.55, 0.86, 'f'],
+    ['turtle', 'turtle', 0.7, 0.66, 'm'],
+    ['tortoise', 'tortoise', 0.75, 0.62, 'm'],
+    ['frog', 'frog', 0.65, 1.0, 'f'],
+    ['toad', 'toad', 0.55, 0.9, 'm'],
+    ['duck', 'duck', 1.4, 1.04, 'f'],
+    ['otter’s cousin', 'cousin', 1.35, 1.14, 'f'],
+    ['otter', 'otter', 1.25, 1.16, 'm'],
+    ['bat', 'bat', 1.8, 1.1, 'f'],
+    ['well', 'well', 0.6, 0.7, 'n'],
+    ['snail', 'snail', 1.1, 0.6, 'm'],
+    ['gnome', 'gnome', 1.35, 0.92, 'm'],
+    ['scarecrow', 'scarecrow', 0.9, 0.88, 'm'],
+    ['beetle', 'beetle', 1.5, 1.15, 'm'],
+    ['carp', 'carp', 1.2, 0.9, 'f'],
+    ['crayfish', 'crayfish', 1.1, 1.2, 'm'],
+    ['catfish', 'catfish', 0.55, 0.78, 'm'],
+    ['moss|mole', 'moss', 0.8, 0.86, 'f'],
+    ['grub', 'grub', 1.0, 0.8, 'm'],
+    ['badger', 'badger', 0.6, 0.84, 'm'],
+    ['heron', 'heron', 0.8, 0.8, 'm'],
+    ['rooster', 'rooster', 1.15, 1.08, 'm'],
+    ['sparrows?', 'sparrow', 1.9, 1.25, 'f'],
+    ['raccoon', 'raccoon', 1.15, 1.1, 'f'],
+    ['cuckoo', 'cuckoo', 1.7, 1.2, 'f'],
+    ['moth', 'moth', 1.3, 0.72, 'f'],
+    ['cricket', 'cricket', 1.6, 1.18, 'm'],
+    ['moon', 'moon', 0.9, 0.74, 'f']
+  ];
+  const CAST = { narrator: [1, 0.92, 'n'], you: [1.18, 1, 'n'] };
+  WHO.forEach(function (c) { CAST[c[1]] = c.slice(2); });
+  const QUIET = { you: 1, ella: 1, sharky: 1 };   /* never who a "he", "she" or "it" points back to */
+  const TOKENS = new RegExp('\\b(?:(you)|(he|she|it)|' + WHO.map(function (c) { return '(' + c[0] + ')'; }).join('|') + ')\\b', 'gi');
+  /* who asks the puzzle on pages where the story does not name them next to their words */
+  const GIVER = { otter: 'the otter', c6_3: 'the mother fox', c6_4: 'the smallest cub', c8_6: 'the Clock Mouse', c8_7: 'the Clock Mouse', c10_0: 'the very small star' };
+  /* lines where the plain rules guess wrong: page id -> { t3: 'who' } for story paragraph 3, { a1: 'who,who' } for the
+     paragraph after the puzzle (one name for each spoken part), { ask: 'who' } for the riddle itself */
+  const FIX = { c6_1: { a1: 'snowhare' } };
+
+  function hash(s) { let h = 7; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; }
+  function strip(t) { return String(t == null ? '' : t).replace(/<[^>]+>/g, ''); }
+  function plain(t) {
+    return strip(t).replace(/[“”]/g, '').replace(/\b[A-Z]{2,}\b/g, function (w) { return w.toLowerCase(); })
+      .replace(/_+/g, ' blank ').replace(/\s*·\s*/g, ', ').replace(/\s+/g, ' ').trim();
+  }
+  function profile(who) {
+    if (CAST[who]) return CAST[who];
+    const h = hash(String(who));   /* someone new, from a live riddle: give them a steady voice of their own */
+    return [0.8 + (h % 9) / 10, 0.85 + ((h >> 4) % 4) / 10, (h >> 7) % 2 ? 'f' : 'm'];
+  }
+  function tokens(text) {
+    const out = []; let m; TOKENS.lastIndex = 0;
+    while ((m = TOKENS.exec(text))) {
+      if (m[1]) out.push('you'); else if (m[2]) out.push('?' + m[2].toLowerCase());
+      else for (let i = 0; i < WHO.length; i++) if (m[i + 3]) { out.push(WHO[i][1]); break; }
+    }
+    return out;
+  }
+  function helperOf(name) { const t = tokens(String(name || '')); return t.length && t[0].charAt(0) !== '?' ? t[0] : null; }
+  function sentences(t) { return t.match(/[^.!?]+[.!?]*/g) || []; }
+  function note(k, st) {
+    if (QUIET[k] || k === 'narrator') return;
+    const kind = profile(k)[2];
+    st.last = k; if (kind === 'm') st.he = st.nearHe = k; else if (kind === 'f') st.she = st.nearShe = k;
+  }
+  function mention(text, st) { tokens(text).forEach(function (k) { if (k.charAt(0) !== '?') note(k, st); }); }
+  /* "he" and "she" point to someone of that kind: named in this paragraph, else whoever asks this page's puzzle, else the last one named */
+  function settle(k, st) {
+    if (k === 'x:voice') return st.giver || k;
+    if (k.charAt(0) !== '?') return k;
+    const kind = k === '?he' ? 'm' : k === '?she' ? 'f' : '';
+    const near = kind === 'm' ? st.nearHe : kind === 'f' ? st.nearShe : null;
+    if (near) return near;
+    if (kind && st.giver && profile(st.giver)[2] === kind) return st.giver;
+    return (kind === 'm' ? st.he : kind === 'f' ? st.she : st.last) || st.giver || st.last || null;
+  }
+  function oddOne(clause) {
+    const m = /^\s*[a-z]+\s+(?:the|a|an)\s+(?:[\w’-]+\s+)*?([\w’-]+)\s*[,.!?]/i.exec(clause);
+    return m ? 'x:' + m[1].toLowerCase() : null;
+  }
+
+  /* split paragraphs into what to say: one list per paragraph of { who, text } */
+  function lines(paras, st, tag) {
+    return (paras || []).map(function (raw, p) {
+      const t = strip(raw), parts = t.split(/“([^”]*)”/), out = [];   /* even slots are story-telling, odd slots are speech */
+      const fix = st.fix && st.fix[tag + p] ? String(st.fix[tag + p]).split(',') : null;
+      let inPara = null, q = 0;
+      st.nearHe = st.nearShe = null; st.endWho = null;
+      for (let i = 0; i < parts.length; i++) {
+        if (i % 2 === 0) {
+          if (parts[i].trim()) { out.push({ who: 'narrator', text: parts[i] }); mention(parts[i], st); }
+          continue;
+        }
+        const before = parts[i - 1].trim(), after = (parts[i + 1] || '').trim();
+        const sb = sentences(before), sa = sentences(after);
+        let who = fix ? fix[Math.min(q, fix.length - 1)] : null, tk;
+        if (!who && /[,:]$/.test(before)) { tk = tokens(sb[sb.length - 1] || ''); if (tk.length) who = settle(tk[tk.length - 1], st); }
+        if (!who && /^[a-z]/.test(after)) { tk = tokens(sa[0] || ''); who = tk.length ? settle(tk[0], st) : settle(oddOne(sa[0] || '') || '?it', st); }
+        if (!who && inPara) who = inPara;
+        if (!who && before) { tk = tokens(sb[sb.length - 1] || ''); if (tk.length) who = settle(tk[0], st); }
+        if (!who && after) { tk = tokens(sa[0] || ''); if (tk.length) who = settle(tk[0], st); }
+        if (!who) who = st.prev2 || st.last || st.giver || st.prev || 'narrator';
+        inPara = who; q++;
+        if (who !== st.prev) { st.prev2 = st.prev; st.prev = who; }
+        note(who, st);
+        st.endWho = who;
+        out.push({ who: who, text: parts[i] });
+      }
+      return out;
+    });
+  }
+  /* everything spoken on one page. node is the page as shown tonight; base is the hand-written page it came from */
+  function page(id, node, base, giver) {
+    const own = !!base && node.text === base.text;
+    const st = { fix: own ? FIX[id] || null : null, giver: helperOf(giver || GIVER[id] || '') };
+    const g = node.riddle || node.maze || node.memory;
+    const text = lines(node.text, st, 't');
+    /* the riddle is read by whoever asks it: the helper on this page, or whoever spoke last just before it */
+    const asker = (st.fix && st.fix.ask) || st.giver || (st.endWho && st.endWho !== 'you' ? st.endWho : null) || 'narrator';
+    return { text: text, asker: asker, after: g && g.after ? lines(g.after, st, 'a') : [] };
+  }
+
+  /* ---- speaking ---- */
+  const synth = typeof window !== 'undefined' && window.speechSynthesis && typeof window.SpeechSynthesisUtterance === 'function' ? window.speechSynthesis : null;
+  const SILLY = /albert|bad news|bahh|bells|boing|bubbles|cellos|wobble|good news|jester|organ|superstar|trinoids|whisper|zarvox|deranged|hysterical|princess|junior|kathy|ralph|fred/i;
+  const PLAIN = /eddy|flo|grandma|grandpa|reed|rocko|sandy|shelley/i;
+  const FEM = /samantha|ava\b|allison|susan|zoe|karen|moira|tessa|fiona|nicky|kate|serena|martha|catherine|stephanie|isha|veena|female|zira|hazel|jenny|aria|sonia|libby|natasha|victoria|michelle|emma|flo|sandy|shelley|grandma|joanna|salli|kimberly|ivy|amy/i;
+  const MALE = /daniel|aaron|arthur|gordon|oliver|rishi|tom\b|alex|evan|nathan|lee\b|david|mark|guy|george|ryan|james|william|liam|male|eddy|reed|rocko|grandpa|christopher|eric|roger|steffan|thomas|brian|andrew/i;
+  let book = null, turn = 0, held = [], watch = 0;
+  function kindOf(v) { return FEM.test(v.name) ? 'f' : MALE.test(v.name) ? 'm' : ''; }
+  function shelf() {
+    if (book) return book;
+    let all = [];
+    try { all = synth.getVoices() || []; } catch (e) { all = []; }
+    all = Array.prototype.filter.call(all, function (v) { return /^en([-_]|$)/i.test(v.lang || '') && !SILLY.test(v.name); })
+      .sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+    if (!all.length) return { teller: null, all: [], got: {} };
+    function score(v) {
+      return (/^en[-_]US/i.test(v.lang) ? 2 : 0) + (/samantha|ava\b|allison|zoe|google us english|aria|jenny|michelle/i.test(v.name) ? 3 : 0) +
+        (/premium|enhanced|natural|neural/i.test(v.name) ? 2 : 0) + (v.default ? 1 : 0) - (PLAIN.test(v.name) ? 4 : 0);
+    }
+    let teller = all[0];
+    all.forEach(function (v) { if (score(v) > score(teller)) teller = v; });
+    book = { teller: teller, all: all, got: {} };
+    return book;
+  }
+  /* the storyteller gets the best voice on the device; each character gets another one of the right kind when there is one */
+  function voiceFor(who) {
+    const b = shelf(), pr = profile(who);
+    if (!b.teller || pr[2] === 'n') return b.teller;
+    if (b.got[who]) return b.got[who];
+    const rest = b.all.filter(function (v) { return v !== b.teller; });
+    const same = rest.filter(function (v) { return kindOf(v) === pr[2]; });
+    let pool = pr[3] ? rest.filter(function (v) { return pr[3].test(v.name); }) : [];
+    if (!pool.length) pool = same.filter(function (v) { return !PLAIN.test(v.name); });
+    if (!pool.length) pool = same;
+    if (!pool.length && kindOf(b.teller) !== pr[2]) pool = rest.filter(function (v) { return !kindOf(v) && !PLAIN.test(v.name); });
+    b.got[who] = pool.length ? pool[hash(who) % pool.length] : b.teller;
+    return b.got[who];
+  }
+  function stop() {
+    turn++; held = []; clearInterval(watch);
+    if (synth) try { synth.cancel(); } catch (e) { /* nothing to stop */ }
+  }
+  /* say the parts in order. onMark(mark) runs as each part starts; onEnd(mine, started) runs once at the end,
+     where started is false if the device never made a sound */
+  function say(parts, onMark, onEnd) {
+    stop();
+    if (!synth || !parts || !parts.length) return false;
+    const my = turn, U = window.SpeechSynthesisUtterance, born = Date.now();
+    let begun = 0, over = false, started = false;
+    function end() { if (over || my !== turn) return; over = true; clearInterval(watch); held = []; if (onEnd) onEnd(true, started); }
+    parts.forEach(function (x, n) {
+      const u = new U(x.text), pr = profile(x.who), v = voiceFor(x.who);
+      if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'en-US';
+      u.pitch = Math.max(0.5, Math.min(2, pr[0])); u.rate = Math.max(0.5, Math.min(1.4, pr[1])); u.volume = 1;
+      u.onstart = function () { if (my !== turn) return; started = true; begun = Date.now(); if (onMark) onMark(x.mark); };
+      u.onend = function () { if (my !== turn) return; begun = Date.now(); if (n === parts.length - 1) end(); };
+      u.onerror = function () { if (my === turn && n === parts.length - 1) end(); };
+      held.push(u);   /* keep hold of them, or some tablets forget to say when they are done */
+      try { synth.speak(u); } catch (e) { /* skip this part */ }
+    });
+    watch = setInterval(function () {
+      if (my !== turn) { clearInterval(watch); return; }
+      if (!started) { if (Date.now() - born > 6000) { try { synth.cancel(); } catch (e) { /* already quiet */ } end(); } }
+      else if (!synth.speaking && !synth.pending && Date.now() - begun > 900) end();
+    }, 450);
+    return true;
+  }
+  if (synth && typeof synth.addEventListener === 'function') synth.addEventListener('voiceschanged', function () { book = null; });
+  if (synth) try { synth.getVoices(); } catch (e) { /* voices come later */ }
+
+  return { can: !!synth, cast: CAST, fix: FIX, page: page, plain: plain, helperOf: helperOf, profile: profile, voiceFor: voiceFor, say: say, stop: stop };
+})();
+
 (function () {
   var KEY = 'riddle-road-v3', OLD_KEY = 'riddle-road-v2', PER = 8, NAMES = ['Maven', 'Ella', 'Sharky'];
   var CH = CHAPTERS, CHI = {};
@@ -2610,12 +2837,14 @@ const ICON = (function () {
     return { screen: 'title', back: 'title', ch: c.id, node: c.start, path: [c.start], solved: [], wrong: {}, stars: {}, fresh: [], knocks: 0, live: false, dyn: {}, fixed: {}, remix: false, salt: 0 };
   }
   var state = fresh();
-  function newPlayer() { return { hero: '', s1: '', s2: '', named: false, found: [], seen: [], sound: true, save: null, ch: {}, remix: true, aiUsed: [] }; }
+  function newPlayer() { return { hero: '', s1: '', s2: '', named: false, found: [], seen: [], sound: true, read: false, save: null, ch: {}, remix: true, aiUsed: [] }; }
   var store = { cur: 0, players: [newPlayer()] };
   var keep = store.players[0];
-  var memoryOnly = false, removeArmed = false;
+  var memoryOnly = false, removeArmed = false, sure = '';
+  var SURE = { over: 'Tap again to start this chapter over', wipe: 'Tap again to erase all stars and start at Chapter 1' };
   var ai = { fn: undefined, off: false, pending: null, seq: 0, timer: 0 };
   var mz = null, mem = null;
+  var talk = { on: false, next: '', moved: false, mute: false };
 
   var scene = document.getElementById('scene');
   var art = document.getElementById('art');
@@ -2631,6 +2860,7 @@ const ICON = (function () {
     if (Array.isArray(d.seen)) p.seen = d.seen.filter(function (id) { return STORY[id]; });
     if (typeof d.sound === 'boolean') p.sound = d.sound;
     if (typeof d.remix === 'boolean') p.remix = d.remix;
+    if (typeof d.read === 'boolean') p.read = d.read;
     if (Array.isArray(d.aiUsed)) p.aiUsed = d.aiUsed.filter(function (x) { return typeof x === 'string'; }).slice(-40);
     if (d.ch && typeof d.ch === 'object') for (k in d.ch) if (CHI[k] !== undefined && d.ch[k]) p.ch[k] = { best: +d.ch[k].best || 0 };
     if (d.save && STORY[d.save.node] && CHI[d.save.ch] !== undefined) p.save = d.save;
@@ -2709,6 +2939,18 @@ const ICON = (function () {
   function paras(list) { return '<div class="words">' + list.map(function (p) { return '<p>' + p + '</p>'; }).join('') + '</div>'; }
   function goBtn(label, act, quiet) {
     return '<button class="go' + (quiet ? ' quiet' : '') + '" type="button" data-act="' + act + '"><span>' + label + '</span><span class="arrow" aria-hidden="true">→</span></button>';
+  }
+  function sureBtn(label, act) {
+    return '<button class="go quiet" type="button" data-act="' + act + '" data-label="' + label + '"><span>' + label + '</span><span class="arrow" aria-hidden="true">\u21ba</span></button>';
+  }
+  function toolsHtml() {
+    return '<div class="tools"><button class="chip" type="button" data-act="stop"><span>Save and stop</span></button>' +
+      '<button class="chip" type="button" data-act="over" data-label="Start chapter over"><span>Start chapter over</span></button></div>';
+  }
+  function unsure() {
+    var el = sure && document.querySelector('[data-act="' + sure + '"]');
+    if (el) el.querySelector('span').textContent = el.getAttribute('data-label');
+    sure = '';
   }
   function pic(key) { return '<span class="pic">' + ICON.draw(key) + '</span>'; }
   function seqHtml(seq) { return '<div class="seq" aria-hidden="true">' + seq.map(pic).join('') + pic('unknown') + '</div>'; }
@@ -2932,7 +3174,7 @@ const ICON = (function () {
   function aiWaiting(id) { return !!state.remix && ai.pending === state.ch && !!REMIX.ai[id] && !state.dyn[id] && !state.fixed[id] && !isSolved(id); }
   function armWait(id) {
     clearTimeout(ai.timer);
-    ai.timer = setTimeout(function () { if (state.node === id && aiWaiting(id)) { state.fixed[id] = 1; saveKeep(); if (state.screen === 'play') render(false); } }, 20000);
+    ai.timer = setTimeout(function () { if (state.node === id && aiWaiting(id)) { state.fixed[id] = 1; saveKeep(); if (state.screen === 'play') { talk.next = 'page'; render(false); } } }, 20000);
   }
   function askAI(chId) {
     if (ai.off || typeof ai.fn !== 'function') return;
@@ -2943,7 +3185,7 @@ const ICON = (function () {
     function done() {
       if (ai.seq !== token) return;
       ai.pending = null; clearTimeout(ai.timer);
-      if (state.ch === chId && state.screen === 'play' && REMIX.ai[state.node] && !isSolved(state.node)) render(false);
+      if (state.ch === chId && state.screen === 'play' && REMIX.ai[state.node] && !isSolved(state.node)) { talk.next = 'page'; render(false); }
     }
     try { p = ai.fn(REMIX.prompt(ids, keep.aiUsed), { modelTier: 'default', cache: false }); } catch (e) { done(); return; }
     Promise.resolve(p).then(function (res) {
@@ -2983,6 +3225,69 @@ const ICON = (function () {
     return '<svg viewBox="0 0 ' + W + ' ' + H + '" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Road map of this chapter">' + s + '</svg>';
   }
 
+  /* ---- read-aloud: the storyteller reads the page, and each character has their own voice ---- */
+  function sayHtml() {
+    if (!VOICE.can) return '';
+    return '<div class="say"><button class="chip talk" type="button" data-act="say" aria-pressed="false"><span>\u25b6 Read to me</span></button>' +
+      '<button class="chip" type="button" data-act="say-all" aria-pressed="' + !!keep.read + '"><span>Read every page: ' + (keep.read ? 'On' : 'Off') + '</span></button>' +
+      (talk.mute ? '<p class="small" role="status">This device has no reading voice turned on.</p>' : '') + '</div>';
+  }
+  function sayList(mode) {
+    var out = [];
+    function add(who, text, mark) { text = nmText(VOICE.plain(text)); if (/[\p{L}\p{N}]/u.test(text)) out.push({ who: who, text: text, mark: mark }); }
+    function each(list, k) { list.forEach(function (ps, i) { ps.forEach(function (p) { add(p.who, p.text, k + i); }); }); }
+    if (state.screen === 'title') { add('narrator', 'Blink and the Riddle Road.', 'T'); TITLE.forEach(function (p, i) { add('narrator', p, 't' + i); }); return out; }
+    var id = state.node, n = N(id), g = game(n), done = isSolved(id), wait = aiWaiting(id), r = n.riddle, wrong = state.wrong[id] || [];
+    var pg = VOICE.page(id, wait ? { text: REMIX.lead(id, state.salt) } : n, STORY[id], REMIX.ai[id] && REMIX.ai[id][0]);
+    if (mode !== 'after') {
+      each(pg.text, 't');
+      if (wait) return out;
+      if (r && !done) {
+        r.lines.forEach(function (l, i) { add(pg.asker, l, 'l' + i); });
+        if (!r.knock) add('narrator', r.options.filter(function (o, i) { return wrong.indexOf(i) === -1; }).map(function (o) { return VOICE.plain(o.label); }).join('. ') + '.', 'o');
+      } else if (r) add('narrator', 'The answer is: ' + rightAnswer(id, r) + '.', 'n');
+      else if (g && !done) add('narrator', n.maze ? mazeTip(n.maze) : MEM_TIP, 'm');
+    }
+    if (g && !done) return out;
+    if (g) each(pg.after, 'a');
+    if (n.ending) add('narrator', endLine(), 'e');
+    else { if (n.ask) add('narrator', n.ask, 'w'); add('narrator', n.choices.map(function (c) { return VOICE.plain(c.label); }).join('. ') + '.', 'w'); }
+    return out;
+  }
+  function markEl(mark) {
+    var w = scene.querySelectorAll('.words'), k = mark ? mark[0] : '', i = +String(mark).slice(1);
+    if (k === 'T') return scene.querySelector('h1');
+    if (k === 't') return w[0] && w[0].children[i];
+    if (k === 'a') return w[1] && w[1].children[i];
+    if (k === 'l') return scene.querySelectorAll('.riddle .lines span')[i];
+    return scene.querySelector({ o: '.picks', n: '.answer', m: '.riddle .small', e: '.score', w: '#scene > .ways', h: '#hint' }[k] || '.none');
+  }
+  function unmark() { var el = scene.querySelector('.now'); if (el) el.classList.remove('now'); }
+  function sayBtn() {
+    var b = scene.querySelector('[data-act="say"]'); if (!b) return;
+    b.setAttribute('aria-pressed', talk.on); b.querySelector('span').textContent = talk.on ? '\u25a0 Stop reading' : '\u25b6 Read to me';
+  }
+  function stopSay() { talk.on = false; VOICE.stop(); unmark(); sayBtn(); }
+  function startSay(parts) {
+    talk.moved = false;
+    talk.on = VOICE.say(parts, function (mark) {
+      unmark(); var el = markEl(mark); if (!el) return;
+      el.classList.add('now');
+      if (!talk.moved) { var b = el.getBoundingClientRect(); if (b.top < 60 || b.bottom > window.innerHeight - 20) el.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'center' }); }
+    }, function (mine, started) {
+      if (!mine) return;
+      talk.on = false; unmark(); sayBtn();
+      if (!started && !talk.mute) { talk.mute = true; var row = scene.querySelector('.say'); if (row) row.insertAdjacentHTML('beforeend', '<p class="small" role="status">This device has no reading voice turned on.</p>'); }
+      else if (started) talk.mute = false;
+    });
+    sayBtn();
+  }
+  function sayHint(text) { if (keep.read && VOICE.can && text) startSay([{ who: 'narrator', text: nmText(VOICE.plain(text)), mark: 'h' }]); }
+  window.addEventListener('touchmove', function () { talk.moved = true; }, { passive: true });
+  window.addEventListener('wheel', function () { talk.moved = true; }, { passive: true });
+  window.addEventListener('pagehide', function () { stopSay(); });
+  document.addEventListener('visibilitychange', function () { if (document.hidden) stopSay(); });
+
   /* ---- screens ---- */
   function drawHud() {
     var playing = state.screen === 'play' || state.screen === 'road';
@@ -3016,21 +3321,25 @@ const ICON = (function () {
     art.innerHTML = nmHtml(ART.draw(key, o));
   }
 
+  var TITLE = [
+    'Blink the firefly needs your help, Maven. So do his friends.',
+    'There are 10 chapters and 80 puzzles: riddles, mazes, matching games, patterns, and number puzzles.',
+    'Earn up to 3 stars on every puzzle. Play a chapter again and its puzzles and mazes change.'
+  ];
   function titleHtml() {
     var h = '<h1>Blink and the Riddle Road</h1>', done = Object.keys(keep.ch).length;
-    h += paras([
-      'Blink the firefly needs your help, Maven. So do his friends.',
-      'There are 10 chapters and 80 puzzles: riddles, mazes, matching games, patterns, and number puzzles.',
-      'Earn up to 3 stars on every puzzle. Play a chapter again and its puzzles and mazes change.'
-    ]);
+    h += sayHtml() + paras(TITLE);
     h += '<p class="small">Chapters finished: <b>' + done + '</b> of ' + CH.length + '  ·  Stars: <b>' + allStars() + '</b> of ' + (CH.length * PER * 3) + '</p>';
     h += '<div class="ways">';
-    if (keep.save) h += goBtn('Keep going: Chapter ' + (CHI[keep.save.ch] + 1), 'resume');
+    var note = state.note; state.note = '';
+    if (note) h += '<p class="saved" id="note" tabindex="-1" role="status">' + (note === 'wiped' ? 'All clear. Your game is new again.' : memoryOnly ? 'Stopped for now.' : 'Saved. Tap \u201cKeep going\u201d to pick up right where you stopped.') + '</p>';
+    if (keep.save) h += goBtn('Keep going: Chapter ' + (CHI[keep.save.ch] + 1), 'resume') + sureBtn('Start Chapter ' + (CHI[keep.save.ch] + 1) + ' over', 'over');
     else if (!done) h += goBtn('Play', 'chapter:c1');
     h += goBtn('World map', 'world', !!keep.save || !done ? true : false);
     h += goBtn('Riddle Book: ' + keep.found.length + ' of ' + RIDDLES.length + ' found', 'book', true);
     h += goBtn('Players: Maven with Ella and Sharky', 'who', true);
-    return h + '</div>';
+    if (keep.save || done || keep.found.length) h += sureBtn('Start the whole game over', 'wipe');
+    return h + '</div><p class="small">' + (memoryOnly ? 'This device is not saving your progress right now. It will last until you close the game.' : 'Your game saves by itself after every puzzle, on this device.') + '</p>';
   }
 
   function worldHtml() {
@@ -3104,10 +3413,15 @@ const ICON = (function () {
     return h + '</section>';
   }
 
-  function mazeHtml(id, n) {
-    var m = n.maze, tip = 'Slide your finger along the path to lead Blink, or tap the arrows. Pick up the 3 green lights, then go to the gold door.';
+  var MEM_TIP = 'Tap two cards. If they match, they stay. Find all 6 pairs.';
+  function mazeTip(m) {
+    var tip = 'Slide your finger along the path to lead Blink, or tap the arrows. Pick up the 3 green lights, then go to the gold door.';
     if (m.kind === 'key') tip += ' The door is locked until you find the key.';
     if (m.kind === 'fog') tip += ' It is dark. You can only see close to Blink.';
+    return tip;
+  }
+  function mazeHtml(id, n) {
+    var tip = mazeTip(n.maze);
     return '<section class="riddle maze" aria-label="Maze"><p class="tag">Maze</p><p class="small">' + tip + '</p><div id="mazeBox"></div>' +
       '<p class="count" id="mazeStat" aria-live="polite"></p><div class="pad">' +
       '<button type="button" class="u" data-act="mv:0" aria-label="Up">↑</button><button type="button" class="l" data-act="mv:3" aria-label="Left">←</button>' +
@@ -3115,16 +3429,17 @@ const ICON = (function () {
       '<p class="hint" id="hint" role="status" aria-live="polite"></p></section>';
   }
   function memHtml() {
-    return '<section class="riddle" aria-label="Matching game"><p class="tag">Matching game</p><p class="small">Tap two cards. If they match, they stay. Find all 6 pairs.</p>' +
+    return '<section class="riddle" aria-label="Matching game"><p class="tag">Matching game</p><p class="small">' + MEM_TIP + '</p>' +
       '<div class="mem" id="memBox"></div><p class="count" id="mazeStat" aria-live="polite"></p></section>';
   }
   function doneHtml(id, label) {
     return '<section class="riddle"><div class="answer" id="answer" tabindex="-1"><span>' + label + ' ' + starsHtml(state.stars[id] || 1) + '</span></div></section>';
   }
 
+  function endLine() { var i = CHI[state.ch]; return CH[i + 1] ? 'Chapter ' + (i + 1) + ' is done. Good night.' : 'The End. You finished the whole game!'; }
   function endHtml() {
     var i = CHI[state.ch], next = CH[i + 1], rec = keep.ch[state.ch] || { best: starTotal() }, last = !next;
-    var h = '<div class="score"><p class="end">' + (last ? 'The End. You finished the whole game!' : 'Chapter ' + (i + 1) + ' is done. Good night.') + '</p>' +
+    var h = '<div class="score"><p class="end">' + endLine() + '</p>' +
       '<p>Stars this time: <b>' + starTotal() + '</b> of ' + (PER * 3) + '  ·  Your best: <b>' + rec.best + '</b></p>' +
       '<p>Riddle Book: <b>' + keep.found.length + '</b> of ' + RIDDLES.length + ' found' + (state.fresh.length ? ' (' + state.fresh.length + ' new tonight)' : '') + '</p>' +
       (last ? '<p>All your stars: <b>' + allStars() + '</b> of ' + (CH.length * PER * 3) + '</p>' : '<p class="small">The next chapter will be waiting tomorrow night.</p>') + '</div>';
@@ -3135,8 +3450,12 @@ const ICON = (function () {
   }
 
   function playHtml() {
+    var n = N(state.node), h = playBody();
+    return n.ending && isSolved(state.node) ? h : h + toolsHtml();
+  }
+  function playBody() {
     var id = state.node, n = N(id), h = '', g = game(n), done = isSolved(id), wait = aiWaiting(id);
-    h += '<p class="place" id="place" tabindex="-1">' + n.place + '</p>' + paras(wait ? REMIX.lead(id, state.salt) : n.text);
+    h += '<p class="place" id="place" tabindex="-1">' + n.place + '</p>' + sayHtml() + paras(wait ? REMIX.lead(id, state.salt) : n.text);
     if (!g) return h + waysHtml(n);
     if (wait) return h + '<section class="riddle" aria-live="polite"><p class="tag">Riddle</p><p class="lines"><span>Blink is thinking up a new riddle\u2026</span></p></section>';
     if (n.riddle) h += riddleHtml(id, n);
@@ -3148,7 +3467,8 @@ const ICON = (function () {
 
   function render(animate, focusId) {
     if (state.screen === 'title' && !keep.named) state.screen = 'who';
-    var sc = state.screen, n = N(state.node);
+    var sc = state.screen, n = N(state.node), next = talk.next;
+    sure = ''; talk.next = ''; talk.on = false; VOICE.stop();
     scene.innerHTML = sc === 'who' ? whoHtml() : nmHtml(sc === 'title' ? titleHtml() : sc === 'world' ? worldHtml() : sc === 'road' ? roadHtml() : sc === 'book' ? bookHtml() : playHtml());
     if (sc === 'play' && aiWaiting(state.node)) armWait(state.node);
     if (sc === 'play' && !isSolved(state.node)) {
@@ -3167,6 +3487,7 @@ const ICON = (function () {
       else { el.focus({ preventScroll: true }); el.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'center' }); }
     }
     if (calm) paint(0);
+    if (next && keep.read && VOICE.can && sc === 'play') startSay(sayList(next));
   }
 
   function solve(id, stars) {
@@ -3181,6 +3502,7 @@ const ICON = (function () {
       sfx.end();
     } else sfx.right();
     saveKeep();
+    talk.next = 'after';
     render(false, 'answer');
   }
   function miss(id, what, hint) {
@@ -3189,6 +3511,7 @@ const ICON = (function () {
     sfx.wrong();
     saveKeep();
     document.getElementById('hint').textContent = nmText(hint);
+    sayHint(hint);
   }
   function visit(id) {
     state.node = id; state.knocks = 0;
@@ -3203,6 +3526,7 @@ const ICON = (function () {
     if (keep.seen.indexOf(state.node) === -1) keep.seen.push(state.node);
     keep.save = null;
     if (state.remix) askAI(id);
+    talk.next = 'page';
     saveKeep(); render(true, 'place');
   }
   function resume() {
@@ -3211,12 +3535,35 @@ const ICON = (function () {
       state = fresh(s.ch);
       state.node = s.node; state.path = s.path || [s.node]; state.solved = s.solved || []; state.wrong = s.wrong || {}; state.stars = s.stars || {}; state.fresh = s.fresh || []; state.knocks = s.knocks || 0; state.dyn = s.dyn || {}; state.fixed = s.fixed || {}; state.remix = !!s.remix; state.salt = s.salt || 0;
     }
-    state.screen = 'play'; state.live = true; render(true, 'place');
+    state.screen = 'play'; state.live = true; talk.next = 'page'; render(true, 'place');
   }
 
   function act(a, b) {
     var id = state.node, n = N(id);
     if (a !== 'remove-player') removeArmed = false;
+    if (a !== sure) unsure();
+    if (a === 'over' || a === 'wipe') {
+      sfx.tap();
+      if (sure !== a) { sure = a; b.querySelector('span').textContent = SURE[a]; return; }
+      sure = ''; mz = null; mem = null;
+      if (a === 'over') {
+        var oc = state.screen === 'play' ? state.ch : keep.save && keep.save.ch;
+        if (CHI[oc] === undefined) return;
+        keep.save = null; state.live = false; startChapter(oc); return;
+      }
+      keep.found = []; keep.seen = []; keep.ch = {}; keep.save = null; keep.aiUsed = [];
+      ai.pending = null; ai.seq++; clearTimeout(ai.timer);
+      state = fresh(); state.note = 'wiped';
+      saveKeep(); render(true, 'note'); return;
+    }
+    if (a === 'say') { if (talk.on) stopSay(); else startSay(sayList('page')); return; }
+    if (a === 'say-all') {
+      keep.read = !keep.read; saveKeep();
+      b.setAttribute('aria-pressed', keep.read); b.querySelector('span').textContent = 'Read every page: ' + (keep.read ? 'On' : 'Off');
+      if (keep.read) startSay(sayList('page')); else stopSay();
+      return;
+    }
+    if (a === 'stop') { sfx.tap(); saveKeep(); state.screen = 'title'; state.note = 'saved'; render(true, 'note'); return; }
     if (a === 'sound') { keep.sound = !keep.sound; saveKeep(); drawHud(); if (keep.sound) sfx.tap(); return; }
     if (a === 'title') { sfx.tap(); saveKeep(); state.screen = 'title'; render(true, 'place'); return; }
     if (a === 'world' || a === 'book' || a === 'road') {
@@ -3247,7 +3594,7 @@ const ICON = (function () {
       sfx.tap(); startChapter(cid); return;
     }
     if (state.screen !== 'play') return;
-    if (a.indexOf('go:') === 0) { sfx.tap(); visit(n.choices[+a.slice(3)].to); saveKeep(); render(true, 'place'); return; }
+    if (a.indexOf('go:') === 0) { sfx.tap(); visit(n.choices[+a.slice(3)].to); saveKeep(); talk.next = 'page'; render(true, 'place'); return; }
     if (a.indexOf('pick:') === 0) {
       var i = +a.slice(5), o = n.riddle.options[i];
       if (o.correct) solve(id); else { b.disabled = true; miss(id, i, o.hint); }
@@ -3267,7 +3614,7 @@ const ICON = (function () {
     if (a === 'knock-open') {
       if (state.knocks === kn.n) { solve(id); return; }
       var k = state.knocks, hint = knockHint(k, kn);
-      if (k === 0) { document.getElementById('hint').textContent = hint; return; }
+      if (k === 0) { document.getElementById('hint').textContent = hint; sayHint(hint); return; }
       state.knocks = 0; document.getElementById('count').textContent = kn.noun + ': 0';
       miss(id, k, hint);
     }
@@ -3347,7 +3694,7 @@ const ICON = (function () {
     if (!calm) requestAnimationFrame(tick);
   }
 
-  window.__rr = { maze: function () { return mz; }, mem: function () { return mem; }, state: function () { return state; }, node: N, ai: ai };
+  window.__rr = { say: sayList, talk: talk, maze: function () { return mz; }, mem: function () { return mem; }, state: function () { return state; }, node: N, ai: ai };
   var hot = window.claude && window.claude.hot;
   if (hot && typeof hot.snapshot === 'function') hot.snapshot(function () { return state; });
   if (hot && typeof hot.ready === 'function') hot.ready(start);

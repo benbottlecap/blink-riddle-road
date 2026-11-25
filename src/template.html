@@ -254,6 +254,13 @@ h1 {
 .row { display: flex; flex-wrap: wrap; gap: 10px; }
 
 .ways { display: flex; flex-direction: column; gap: 12px; }
+.tools { display: flex; flex-wrap: wrap; gap: 10px; padding-top: 16px; border-top: 1px solid rgba(170, 183, 214, 0.25); }
+.saved { margin: 0; font-family: var(--display); font-weight: 700; font-size: 1.1rem; color: var(--glow); }
+.saved:focus { outline: none; }
+.say { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.chip.talk { border-color: var(--glow); font-weight: 700; }
+.chip.talk[aria-pressed="true"] { background: rgba(255, 211, 92, 0.22); }
+.now { background: rgba(255, 211, 92, 0.14); box-shadow: 0 0 0 7px rgba(255, 211, 92, 0.14); border-radius: 8px; }
 .ways .ask { margin: 0; font-family: var(--display); font-weight: 700; font-size: 1.1rem; color: var(--glow); }
 .go {
   min-height: 62px;

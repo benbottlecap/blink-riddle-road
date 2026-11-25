@@ -22,12 +22,14 @@
     return { screen: 'title', back: 'title', ch: c.id, node: c.start, path: [c.start], solved: [], wrong: {}, stars: {}, fresh: [], knocks: 0, live: false, dyn: {}, fixed: {}, remix: false, salt: 0 };
   }
   var state = fresh();
-  function newPlayer() { return { hero: '', s1: '', s2: '', named: false, found: [], seen: [], sound: true, save: null, ch: {}, remix: true, aiUsed: [] }; }
+  function newPlayer() { return { hero: '', s1: '', s2: '', named: false, found: [], seen: [], sound: true, read: false, save: null, ch: {}, remix: true, aiUsed: [] }; }
   var store = { cur: 0, players: [newPlayer()] };
   var keep = store.players[0];
-  var memoryOnly = false, removeArmed = false;
+  var memoryOnly = false, removeArmed = false, sure = '';
+  var SURE = { over: 'Tap again to start this chapter over', wipe: 'Tap again to erase all stars and start at Chapter 1' };
   var ai = { fn: undefined, off: false, pending: null, seq: 0, timer: 0 };
   var mz = null, mem = null;
+  var talk = { on: false, next: '', moved: false, mute: false };
 
   var scene = document.getElementById('scene');
   var art = document.getElementById('art');
@@ -43,6 +45,7 @@
     if (Array.isArray(d.seen)) p.seen = d.seen.filter(function (id) { return STORY[id]; });
     if (typeof d.sound === 'boolean') p.sound = d.sound;
     if (typeof d.remix === 'boolean') p.remix = d.remix;
+    if (typeof d.read === 'boolean') p.read = d.read;
     if (Array.isArray(d.aiUsed)) p.aiUsed = d.aiUsed.filter(function (x) { return typeof x === 'string'; }).slice(-40);
     if (d.ch && typeof d.ch === 'object') for (k in d.ch) if (CHI[k] !== undefined && d.ch[k]) p.ch[k] = { best: +d.ch[k].best || 0 };
     if (d.save && STORY[d.save.node] && CHI[d.save.ch] !== undefined) p.save = d.save;
@@ -121,6 +124,18 @@
   function paras(list) { return '<div class="words">' + list.map(function (p) { return '<p>' + p + '</p>'; }).join('') + '</div>'; }
   function goBtn(label, act, quiet) {
     return '<button class="go' + (quiet ? ' quiet' : '') + '" type="button" data-act="' + act + '"><span>' + label + '</span><span class="arrow" aria-hidden="true">→</span></button>';
+  }
+  function sureBtn(label, act) {
+    return '<button class="go quiet" type="button" data-act="' + act + '" data-label="' + label + '"><span>' + label + '</span><span class="arrow" aria-hidden="true">\u21ba</span></button>';
+  }
+  function toolsHtml() {
+    return '<div class="tools"><button class="chip" type="button" data-act="stop"><span>Save and stop</span></button>' +
+      '<button class="chip" type="button" data-act="over" data-label="Start chapter over"><span>Start chapter over</span></button></div>';
+  }
+  function unsure() {
+    var el = sure && document.querySelector('[data-act="' + sure + '"]');
+    if (el) el.querySelector('span').textContent = el.getAttribute('data-label');
+    sure = '';
   }
   function pic(key) { return '<span class="pic">' + ICON.draw(key) + '</span>'; }
   function seqHtml(seq) { return '<div class="seq" aria-hidden="true">' + seq.map(pic).join('') + pic('unknown') + '</div>'; }
@@ -344,7 +359,7 @@
   function aiWaiting(id) { return !!state.remix && ai.pending === state.ch && !!REMIX.ai[id] && !state.dyn[id] && !state.fixed[id] && !isSolved(id); }
   function armWait(id) {
     clearTimeout(ai.timer);
-    ai.timer = setTimeout(function () { if (state.node === id && aiWaiting(id)) { state.fixed[id] = 1; saveKeep(); if (state.screen === 'play') render(false); } }, 20000);
+    ai.timer = setTimeout(function () { if (state.node === id && aiWaiting(id)) { state.fixed[id] = 1; saveKeep(); if (state.screen === 'play') { talk.next = 'page'; render(false); } } }, 20000);
   }
   function askAI(chId) {
     if (ai.off || typeof ai.fn !== 'function') return;
@@ -355,7 +370,7 @@
     function done() {
       if (ai.seq !== token) return;
       ai.pending = null; clearTimeout(ai.timer);
-      if (state.ch === chId && state.screen === 'play' && REMIX.ai[state.node] && !isSolved(state.node)) render(false);
+      if (state.ch === chId && state.screen === 'play' && REMIX.ai[state.node] && !isSolved(state.node)) { talk.next = 'page'; render(false); }
     }
     try { p = ai.fn(REMIX.prompt(ids, keep.aiUsed), { modelTier: 'default', cache: false }); } catch (e) { done(); return; }
     Promise.resolve(p).then(function (res) {
@@ -395,6 +410,69 @@
     return '<svg viewBox="0 0 ' + W + ' ' + H + '" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Road map of this chapter">' + s + '</svg>';
   }
 
+  /* ---- read-aloud: the storyteller reads the page, and each character has their own voice ---- */
+  function sayHtml() {
+    if (!VOICE.can) return '';
+    return '<div class="say"><button class="chip talk" type="button" data-act="say" aria-pressed="false"><span>\u25b6 Read to me</span></button>' +
+      '<button class="chip" type="button" data-act="say-all" aria-pressed="' + !!keep.read + '"><span>Read every page: ' + (keep.read ? 'On' : 'Off') + '</span></button>' +
+      (talk.mute ? '<p class="small" role="status">This device has no reading voice turned on.</p>' : '') + '</div>';
+  }
+  function sayList(mode) {
+    var out = [];
+    function add(who, text, mark) { text = nmText(VOICE.plain(text)); if (/[\p{L}\p{N}]/u.test(text)) out.push({ who: who, text: text, mark: mark }); }
+    function each(list, k) { list.forEach(function (ps, i) { ps.forEach(function (p) { add(p.who, p.text, k + i); }); }); }
+    if (state.screen === 'title') { add('narrator', 'Blink and the Riddle Road.', 'T'); TITLE.forEach(function (p, i) { add('narrator', p, 't' + i); }); return out; }
+    var id = state.node, n = N(id), g = game(n), done = isSolved(id), wait = aiWaiting(id), r = n.riddle, wrong = state.wrong[id] || [];
+    var pg = VOICE.page(id, wait ? { text: REMIX.lead(id, state.salt) } : n, STORY[id], REMIX.ai[id] && REMIX.ai[id][0]);
+    if (mode !== 'after') {
+      each(pg.text, 't');
+      if (wait) return out;
+      if (r && !done) {
+        r.lines.forEach(function (l, i) { add(pg.asker, l, 'l' + i); });
+        if (!r.knock) add('narrator', r.options.filter(function (o, i) { return wrong.indexOf(i) === -1; }).map(function (o) { return VOICE.plain(o.label); }).join('. ') + '.', 'o');
+      } else if (r) add('narrator', 'The answer is: ' + rightAnswer(id, r) + '.', 'n');
+      else if (g && !done) add('narrator', n.maze ? mazeTip(n.maze) : MEM_TIP, 'm');
+    }
+    if (g && !done) return out;
+    if (g) each(pg.after, 'a');
+    if (n.ending) add('narrator', endLine(), 'e');
+    else { if (n.ask) add('narrator', n.ask, 'w'); add('narrator', n.choices.map(function (c) { return VOICE.plain(c.label); }).join('. ') + '.', 'w'); }
+    return out;
+  }
+  function markEl(mark) {
+    var w = scene.querySelectorAll('.words'), k = mark ? mark[0] : '', i = +String(mark).slice(1);
+    if (k === 'T') return scene.querySelector('h1');
+    if (k === 't') return w[0] && w[0].children[i];
+    if (k === 'a') return w[1] && w[1].children[i];
+    if (k === 'l') return scene.querySelectorAll('.riddle .lines span')[i];
+    return scene.querySelector({ o: '.picks', n: '.answer', m: '.riddle .small', e: '.score', w: '#scene > .ways', h: '#hint' }[k] || '.none');
+  }
+  function unmark() { var el = scene.querySelector('.now'); if (el) el.classList.remove('now'); }
+  function sayBtn() {
+    var b = scene.querySelector('[data-act="say"]'); if (!b) return;
+    b.setAttribute('aria-pressed', talk.on); b.querySelector('span').textContent = talk.on ? '\u25a0 Stop reading' : '\u25b6 Read to me';
+  }
+  function stopSay() { talk.on = false; VOICE.stop(); unmark(); sayBtn(); }
+  function startSay(parts) {
+    talk.moved = false;
+    talk.on = VOICE.say(parts, function (mark) {
+      unmark(); var el = markEl(mark); if (!el) return;
+      el.classList.add('now');
+      if (!talk.moved) { var b = el.getBoundingClientRect(); if (b.top < 60 || b.bottom > window.innerHeight - 20) el.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'center' }); }
+    }, function (mine, started) {
+      if (!mine) return;
+      talk.on = false; unmark(); sayBtn();
+      if (!started && !talk.mute) { talk.mute = true; var row = scene.querySelector('.say'); if (row) row.insertAdjacentHTML('beforeend', '<p class="small" role="status">This device has no reading voice turned on.</p>'); }
+      else if (started) talk.mute = false;
+    });
+    sayBtn();
+  }
+  function sayHint(text) { if (keep.read && VOICE.can && text) startSay([{ who: 'narrator', text: nmText(VOICE.plain(text)), mark: 'h' }]); }
+  window.addEventListener('touchmove', function () { talk.moved = true; }, { passive: true });
+  window.addEventListener('wheel', function () { talk.moved = true; }, { passive: true });
+  window.addEventListener('pagehide', function () { stopSay(); });
+  document.addEventListener('visibilitychange', function () { if (document.hidden) stopSay(); });
+
   /* ---- screens ---- */
   function drawHud() {
     var playing = state.screen === 'play' || state.screen === 'road';
@@ -428,21 +506,25 @@
     art.innerHTML = nmHtml(ART.draw(key, o));
   }
 
+  var TITLE = [
+    'Blink the firefly needs your help, Maven. So do his friends.',
+    'There are 10 chapters and 80 puzzles: riddles, mazes, matching games, patterns, and number puzzles.',
+    'Earn up to 3 stars on every puzzle. Play a chapter again and its puzzles and mazes change.'
+  ];
   function titleHtml() {
     var h = '<h1>Blink and the Riddle Road</h1>', done = Object.keys(keep.ch).length;
-    h += paras([
-      'Blink the firefly needs your help, Maven. So do his friends.',
-      'There are 10 chapters and 80 puzzles: riddles, mazes, matching games, patterns, and number puzzles.',
-      'Earn up to 3 stars on every puzzle. Play a chapter again and its puzzles and mazes change.'
-    ]);
+    h += sayHtml() + paras(TITLE);
     h += '<p class="small">Chapters finished: <b>' + done + '</b> of ' + CH.length + '  ·  Stars: <b>' + allStars() + '</b> of ' + (CH.length * PER * 3) + '</p>';
     h += '<div class="ways">';
-    if (keep.save) h += goBtn('Keep going: Chapter ' + (CHI[keep.save.ch] + 1), 'resume');
+    var note = state.note; state.note = '';
+    if (note) h += '<p class="saved" id="note" tabindex="-1" role="status">' + (note === 'wiped' ? 'All clear. Your game is new again.' : memoryOnly ? 'Stopped for now.' : 'Saved. Tap \u201cKeep going\u201d to pick up right where you stopped.') + '</p>';
+    if (keep.save) h += goBtn('Keep going: Chapter ' + (CHI[keep.save.ch] + 1), 'resume') + sureBtn('Start Chapter ' + (CHI[keep.save.ch] + 1) + ' over', 'over');
     else if (!done) h += goBtn('Play', 'chapter:c1');
     h += goBtn('World map', 'world', !!keep.save || !done ? true : false);
     h += goBtn('Riddle Book: ' + keep.found.length + ' of ' + RIDDLES.length + ' found', 'book', true);
     h += goBtn('Players: Maven with Ella and Sharky', 'who', true);
-    return h + '</div>';
+    if (keep.save || done || keep.found.length) h += sureBtn('Start the whole game over', 'wipe');
+    return h + '</div><p class="small">' + (memoryOnly ? 'This device is not saving your progress right now. It will last until you close the game.' : 'Your game saves by itself after every puzzle, on this device.') + '</p>';
   }
 
   function worldHtml() {
@@ -516,10 +598,15 @@
     return h + '</section>';
   }
 
-  function mazeHtml(id, n) {
-    var m = n.maze, tip = 'Slide your finger along the path to lead Blink, or tap the arrows. Pick up the 3 green lights, then go to the gold door.';
+  var MEM_TIP = 'Tap two cards. If they match, they stay. Find all 6 pairs.';
+  function mazeTip(m) {
+    var tip = 'Slide your finger along the path to lead Blink, or tap the arrows. Pick up the 3 green lights, then go to the gold door.';
     if (m.kind === 'key') tip += ' The door is locked until you find the key.';
     if (m.kind === 'fog') tip += ' It is dark. You can only see close to Blink.';
+    return tip;
+  }
+  function mazeHtml(id, n) {
+    var tip = mazeTip(n.maze);
     return '<section class="riddle maze" aria-label="Maze"><p class="tag">Maze</p><p class="small">' + tip + '</p><div id="mazeBox"></div>' +
       '<p class="count" id="mazeStat" aria-live="polite"></p><div class="pad">' +
       '<button type="button" class="u" data-act="mv:0" aria-label="Up">↑</button><button type="button" class="l" data-act="mv:3" aria-label="Left">←</button>' +
@@ -527,16 +614,17 @@
       '<p class="hint" id="hint" role="status" aria-live="polite"></p></section>';
   }
   function memHtml() {
-    return '<section class="riddle" aria-label="Matching game"><p class="tag">Matching game</p><p class="small">Tap two cards. If they match, they stay. Find all 6 pairs.</p>' +
+    return '<section class="riddle" aria-label="Matching game"><p class="tag">Matching game</p><p class="small">' + MEM_TIP + '</p>' +
       '<div class="mem" id="memBox"></div><p class="count" id="mazeStat" aria-live="polite"></p></section>';
   }
   function doneHtml(id, label) {
     return '<section class="riddle"><div class="answer" id="answer" tabindex="-1"><span>' + label + ' ' + starsHtml(state.stars[id] || 1) + '</span></div></section>';
   }
 
+  function endLine() { var i = CHI[state.ch]; return CH[i + 1] ? 'Chapter ' + (i + 1) + ' is done. Good night.' : 'The End. You finished the whole game!'; }
   function endHtml() {
     var i = CHI[state.ch], next = CH[i + 1], rec = keep.ch[state.ch] || { best: starTotal() }, last = !next;
-    var h = '<div class="score"><p class="end">' + (last ? 'The End. You finished the whole game!' : 'Chapter ' + (i + 1) + ' is done. Good night.') + '</p>' +
+    var h = '<div class="score"><p class="end">' + endLine() + '</p>' +
       '<p>Stars this time: <b>' + starTotal() + '</b> of ' + (PER * 3) + '  ·  Your best: <b>' + rec.best + '</b></p>' +
       '<p>Riddle Book: <b>' + keep.found.length + '</b> of ' + RIDDLES.length + ' found' + (state.fresh.length ? ' (' + state.fresh.length + ' new tonight)' : '') + '</p>' +
       (last ? '<p>All your stars: <b>' + allStars() + '</b> of ' + (CH.length * PER * 3) + '</p>' : '<p class="small">The next chapter will be waiting tomorrow night.</p>') + '</div>';
@@ -547,8 +635,12 @@
   }
 
   function playHtml() {
+    var n = N(state.node), h = playBody();
+    return n.ending && isSolved(state.node) ? h : h + toolsHtml();
+  }
+  function playBody() {
     var id = state.node, n = N(id), h = '', g = game(n), done = isSolved(id), wait = aiWaiting(id);
-    h += '<p class="place" id="place" tabindex="-1">' + n.place + '</p>' + paras(wait ? REMIX.lead(id, state.salt) : n.text);
+    h += '<p class="place" id="place" tabindex="-1">' + n.place + '</p>' + sayHtml() + paras(wait ? REMIX.lead(id, state.salt) : n.text);
     if (!g) return h + waysHtml(n);
     if (wait) return h + '<section class="riddle" aria-live="polite"><p class="tag">Riddle</p><p class="lines"><span>Blink is thinking up a new riddle\u2026</span></p></section>';
     if (n.riddle) h += riddleHtml(id, n);
@@ -560,7 +652,8 @@
 
   function render(animate, focusId) {
     if (state.screen === 'title' && !keep.named) state.screen = 'who';
-    var sc = state.screen, n = N(state.node);
+    var sc = state.screen, n = N(state.node), next = talk.next;
+    sure = ''; talk.next = ''; talk.on = false; VOICE.stop();
     scene.innerHTML = sc === 'who' ? whoHtml() : nmHtml(sc === 'title' ? titleHtml() : sc === 'world' ? worldHtml() : sc === 'road' ? roadHtml() : sc === 'book' ? bookHtml() : playHtml());
     if (sc === 'play' && aiWaiting(state.node)) armWait(state.node);
     if (sc === 'play' && !isSolved(state.node)) {
@@ -579,6 +672,7 @@
       else { el.focus({ preventScroll: true }); el.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'center' }); }
     }
     if (calm) paint(0);
+    if (next && keep.read && VOICE.can && sc === 'play') startSay(sayList(next));
   }
 
   function solve(id, stars) {
@@ -593,6 +687,7 @@
       sfx.end();
     } else sfx.right();
     saveKeep();
+    talk.next = 'after';
     render(false, 'answer');
   }
   function miss(id, what, hint) {
@@ -601,6 +696,7 @@
     sfx.wrong();
     saveKeep();
     document.getElementById('hint').textContent = nmText(hint);
+    sayHint(hint);
   }
   function visit(id) {
     state.node = id; state.knocks = 0;
@@ -615,6 +711,7 @@
     if (keep.seen.indexOf(state.node) === -1) keep.seen.push(state.node);
     keep.save = null;
     if (state.remix) askAI(id);
+    talk.next = 'page';
     saveKeep(); render(true, 'place');
   }
   function resume() {
@@ -623,12 +720,35 @@
       state = fresh(s.ch);
       state.node = s.node; state.path = s.path || [s.node]; state.solved = s.solved || []; state.wrong = s.wrong || {}; state.stars = s.stars || {}; state.fresh = s.fresh || []; state.knocks = s.knocks || 0; state.dyn = s.dyn || {}; state.fixed = s.fixed || {}; state.remix = !!s.remix; state.salt = s.salt || 0;
     }
-    state.screen = 'play'; state.live = true; render(true, 'place');
+    state.screen = 'play'; state.live = true; talk.next = 'page'; render(true, 'place');
   }
 
   function act(a, b) {
     var id = state.node, n = N(id);
     if (a !== 'remove-player') removeArmed = false;
+    if (a !== sure) unsure();
+    if (a === 'over' || a === 'wipe') {
+      sfx.tap();
+      if (sure !== a) { sure = a; b.querySelector('span').textContent = SURE[a]; return; }
+      sure = ''; mz = null; mem = null;
+      if (a === 'over') {
+        var oc = state.screen === 'play' ? state.ch : keep.save && keep.save.ch;
+        if (CHI[oc] === undefined) return;
+        keep.save = null; state.live = false; startChapter(oc); return;
+      }
+      keep.found = []; keep.seen = []; keep.ch = {}; keep.save = null; keep.aiUsed = [];
+      ai.pending = null; ai.seq++; clearTimeout(ai.timer);
+      state = fresh(); state.note = 'wiped';
+      saveKeep(); render(true, 'note'); return;
+    }
+    if (a === 'say') { if (talk.on) stopSay(); else startSay(sayList('page')); return; }
+    if (a === 'say-all') {
+      keep.read = !keep.read; saveKeep();
+      b.setAttribute('aria-pressed', keep.read); b.querySelector('span').textContent = 'Read every page: ' + (keep.read ? 'On' : 'Off');
+      if (keep.read) startSay(sayList('page')); else stopSay();
+      return;
+    }
+    if (a === 'stop') { sfx.tap(); saveKeep(); state.screen = 'title'; state.note = 'saved'; render(true, 'note'); return; }
     if (a === 'sound') { keep.sound = !keep.sound; saveKeep(); drawHud(); if (keep.sound) sfx.tap(); return; }
     if (a === 'title') { sfx.tap(); saveKeep(); state.screen = 'title'; render(true, 'place'); return; }
     if (a === 'world' || a === 'book' || a === 'road') {
@@ -659,7 +779,7 @@
       sfx.tap(); startChapter(cid); return;
     }
     if (state.screen !== 'play') return;
-    if (a.indexOf('go:') === 0) { sfx.tap(); visit(n.choices[+a.slice(3)].to); saveKeep(); render(true, 'place'); return; }
+    if (a.indexOf('go:') === 0) { sfx.tap(); visit(n.choices[+a.slice(3)].to); saveKeep(); talk.next = 'page'; render(true, 'place'); return; }
     if (a.indexOf('pick:') === 0) {
       var i = +a.slice(5), o = n.riddle.options[i];
       if (o.correct) solve(id); else { b.disabled = true; miss(id, i, o.hint); }
@@ -679,7 +799,7 @@
     if (a === 'knock-open') {
       if (state.knocks === kn.n) { solve(id); return; }
       var k = state.knocks, hint = knockHint(k, kn);
-      if (k === 0) { document.getElementById('hint').textContent = hint; return; }
+      if (k === 0) { document.getElementById('hint').textContent = hint; sayHint(hint); return; }
       state.knocks = 0; document.getElementById('count').textContent = kn.noun + ': 0';
       miss(id, k, hint);
     }
@@ -759,7 +879,7 @@
     if (!calm) requestAnimationFrame(tick);
   }
 
-  window.__rr = { maze: function () { return mz; }, mem: function () { return mem; }, state: function () { return state; }, node: N, ai: ai };
+  window.__rr = { say: sayList, talk: talk, maze: function () { return mz; }, mem: function () { return mem; }, state: function () { return state; }, node: N, ai: ai };
   var hot = window.claude && window.claude.hot;
   if (hot && typeof hot.snapshot === 'function') hot.snapshot(function () { return state; });
   if (hot && typeof hot.ready === 'function') hot.ready(start);
