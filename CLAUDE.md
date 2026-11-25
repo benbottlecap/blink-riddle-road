@@ -18,7 +18,7 @@ Do not leave a change sitting only in a chat or only on the Claude artifact.
    The audit's `linesNotRecorded` should be 0. Lines without a recording still work, but in the device's robotic voice.
    `tools/record.py` explains what it needs (the open-source Kokoro voice model). Only new or changed lines are spoken again.
 5. Commit `src/`, `audio/` and `index.html` together and push to `main`. GitHub Pages redeploys in about a minute.
-6. If the game is also published as a Claude artifact ("Blink and the Riddle Road"), republish the same `index.html` there too, together with any changed `audio/<page>.m4a` files (same paths).
+6. If the game is also published as a Claude artifact ("Blink and the Riddle Road"), republish the same `index.html` there too, together with any changed `audio/<page>.mp4` files (same paths).
 
 ## Files
 
@@ -26,7 +26,7 @@ Do not leave a change sitting only in a chat or only on the Claude artifact.
 - `src/remix.js` puzzle generators for replays, and the live-riddle prompt and its safety filter.
 - `src/art.js` scene pictures and the world map; `src/icons.js` answer pictures.
 - `src/voice.js` read-aloud: who says each line, playing the recorded voices, and the device-voice fallback.
-- `audio/<page>.m4a` the recorded voices, one file per page. `src/clips.js` says where each line sits in them. Both are made by `tools/record.py`; never edit them by hand.
+- `audio/<page>.mp4` the recorded voices, one file per page. `src/clips.js` says where each line sits in them. Both are made by `tools/record.py`; never edit them by hand.
 - `tools/lines.js` lists every line to record (`tools/lines.json`). `tools/record.py` holds the voice chosen for each character.
 - `src/engine.js` game logic: players, saving, restart buttons, read-aloud buttons, mazes, matching game, maps.
 - `src/template.html` page shell and styles.

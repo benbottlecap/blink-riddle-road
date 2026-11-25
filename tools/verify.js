@@ -129,11 +129,11 @@ Object.keys(speakers).concat(Object.keys(reviewed)).forEach(id => { if (speakers
 let clipPages = 0, clipsMissing = 0;
 if (fs.existsSync(d + 'clips.js')) {
   const CL = new Function(fs.readFileSync(d + 'clips.js', 'utf8') + '\nreturn CLIPS;')(), adir = require('path').join(__dirname, '..', 'audio') + '/';
-  Object.keys(CL.pages).forEach(pg => { clipPages++; if (!fs.existsSync(adir + pg + '.m4a')) bad.push('recordings: audio/' + pg + '.m4a is missing'); if (pg !== 'title' && !STORY[pg]) bad.push('recordings: recorded page is gone from the story: ' + pg); });
+  Object.keys(CL.pages).forEach(pg => { clipPages++; if (!fs.existsSync(adir + pg + '.mp4')) bad.push('recordings: audio/' + pg + '.mp4 is missing'); if (pg !== 'title' && !STORY[pg]) bad.push('recordings: recorded page is gone from the story: ' + pg); });
   Object.keys(STORY).forEach(id => { const n = STORY[id], have = new Set((CL.pages[id] || []).map(c => c[0])), pg = VOICE.page(id, n, n, REMIX.ai[id] && REMIX.ai[id][0]);
-    const need = (who, text) => { const t = VOICE.plain(text); if (/[A-Za-z0-9]/.test(t) && !have.has(VOICE.key(who, t))) clipsMissing++; };
+    const need = (who, text) => { const t = VOICE.plain(text); if (/[A-Za-z0-9]/.test(t) && !have.has(VOICE.key(who, t))) { clipsMissing++; if (process.argv.includes('--show-unrecorded')) console.log('not recorded: ' + id + ' ' + who + ' :: ' + t); } };
     pg.text.concat(pg.after).forEach(ps => ps.forEach(p => need(p.who, p.text)));
-    if (n.riddle) { n.riddle.lines.forEach(l => need(pg.asker, l)); n.riddle.options.forEach(o => { need('narrator', o.label + '.'); if (o.hint) need('narrator', o.hint); }); } });
+    if (n.riddle) { n.riddle.lines.forEach(l => need(pg.asker, l)); if (!n.riddle.knock) n.riddle.options.forEach(o => { need('narrator', o.label + '.'); if (o.hint) need('narrator', o.hint); }); } });
 }
 console.log(JSON.stringify({ handWritten: hand, handWrittenSolvedByChecker: solved, handWrittenWordRiddles: hand - solved, rerolled: rolls, generators: Object.keys(REMIX.gen).length, mazeBoards: boards, mazeVariations: mazeRuns, firstPlayPathLen: [shortest, longest], chapterPaths: CHAPTERS.map(c => c.paths).join(','), liveGateCases: gate.length, spokenLines: spoken, voices: Object.keys(cast).length, mazesBlockedByDoor: behindDoor, mazesWithSpaceBehindDoor: deadSpace, recordedPages: clipPages, linesNotRecorded: clipsMissing, problems: bad.length }));
 const uniq = {}; bad.forEach(b => { const k = b.split(' :: ')[0]; uniq[k] = uniq[k] || b; }); Object.values(uniq).slice(0, 25).forEach(b => console.log('PROBLEM', b.slice(0, 330)));

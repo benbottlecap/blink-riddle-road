@@ -202,7 +202,7 @@ const VOICE = (function () {
   }
   function load(page) {
     if (onTape === page) return;
-    onTape = page; tape.src = 'audio/' + page + '.m4a?v=' + CLIPS.v;
+    onTape = page; tape.src = 'audio/' + page + '.mp4?v=' + CLIPS.v;
     try { tape.load(); } catch (e) { /* it loads when played */ }
   }
   function stop() {
